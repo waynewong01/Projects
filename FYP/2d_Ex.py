@@ -24,9 +24,9 @@ TOPIC = "ips/rssi"
 # Anchor positions (x, y) in meters
 # Example: 3 anchors in a triangle
 ANCHOR_POS = {
-    "A1": (0.0, 0.0),    # Bottom-left
-    "A2": (4.0, 0.0),    # Bottom-right
-    "A3": (2.0, 3.0),    # Top-center
+    "A1": (0, 3.0),    # Bottom-left
+    "A2": (3.4, 3.0),    # Bottom-right
+    "A3": (1.7, 0),    # Top-center
 }
 
 # For 4 anchors (rectangle), use:
@@ -39,9 +39,9 @@ ANCHOR_POS = {
 
 # Calibration per anchor
 CALIB = {
-    "A1": {"rssi1m": -65.07, "n": 1.435},
-    "A2": {"rssi1m": -67.47, "n": 1.810},
-    "A3": {"rssi1m": -66.00, "n": 1.600},
+    "A1": {"rssi1m": -68.57, "n": 2.426},
+    "A2": {"rssi1m": -73.94, "n": 3.301},
+    "A3": {"rssi1m": -71.32, "n": 3.505},
     "A4": {"rssi1m": -66.00, "n": 1.600},  # Only needed if using 4 anchors
 }
 
@@ -336,8 +336,16 @@ def main():
     print("[MAIN] Running... Close window to stop")
     print(f"[MAIN] Using {len(ANCHOR_POS)} anchors: {list(ANCHOR_POS.keys())}")
     
+    running = True
+    
+    def on_close(event):
+        nonlocal running
+        running = False
+    
+    fig.canvas.mpl_connect('close_event', on_close)
+    
     try:
-        while plt.fignum_exists(fig.number):
+        while running and plt.fignum_exists(fig.number):
             try:
                 # Get latest position (discard old ones)
                 result = None
@@ -383,18 +391,22 @@ def main():
                     
                     info.set_text('\n'.join(lines))
                     
-                    fig.canvas.draw()
+                    fig.canvas.draw_idle()
                     fig.canvas.flush_events()
                     
             except Exception as e:
                 print(f"Plot error: {e}")
             
-            plt.pause(0.05)
+            try:
+                plt.pause(0.05)
+            except:
+                break
             
     except KeyboardInterrupt:
         pass
     finally:
         client.loop_stop()
+        client.disconnect()
         plt.close('all')
         print("[MAIN] Done")
 
