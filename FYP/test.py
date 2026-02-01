@@ -25,9 +25,9 @@ TOPIC = "ips/rssi"
 # Anchor positions (x, y) in meters
 ANCHOR_POS = {
     "A1": (0, 0),
-    "A2": (0, 4.17),
-    "A3": (4.2, 0),
-    "A4": (4.2, 4.17),
+    "A2": (5, 0),
+    "A3": (5, 5),
+    "A4": (0, 5),
 }
 
 # Calibration per anchor
@@ -43,8 +43,25 @@ D_MIN, D_MAX = 0.1, 20.0
 MAX_AGE = 2.0
 MIN_ANCHORS = 3
 
-# Position smoothing
-POS_ALPHA = 0.3  # Lower = smoother but slower response (0.1-0.5 recommended)
+# =========================
+# STABILITY CONFIG
+# =========================
+POS_ALPHA = 0.2  # EMA smoothing factor (lower = smoother, 0.1-0.3 recommended)
+MAX_JUMP_DISTANCE = 1.5  # Max allowed jump in meters per update (outlier rejection)
+USE_KALMAN = True  # Use Kalman filter for extra smoothing
+KALMAN_PROCESS_NOISE = 0.05  # How much we expect position to change
+KALMAN_MEASUREMENT_NOISE = 0.5  # How noisy measurements are
+
+# =========================
+# ROOM BOUNDARY CONFIG
+# =========================
+ENABLE_BOUNDARY_CLAMP = True  # Toggle boundary clamping on/off
+ROOM_BOUNDS = {
+    "x_min": -0.5,
+    "x_max": 5.5,
+    "y_min": -0.5,
+    "y_max": 5.5,
+}
 
 # =========================
 # STATE - Per anchor
@@ -61,6 +78,191 @@ anchors = {name: AnchorData() for name in ANCHOR_POS}
 frame_count = 0
 last_plot_time = 0
 position_queue = Queue(maxsize=1)
+
+# =========================
+# POSITION SMOOTHER CLASS
+# =========================
+class PositionSmoother:
+    """Smooths position estimates using EMA and outlier rejection."""
+    
+    def __init__(self, alpha=0.2, max_jump=1.5):
+        self.alpha = alpha
+        self.max_jump = max_jump
+        self.last_pos = None
+        self.history = deque(maxlen=10)  # Keep history for median filtering
+    
+    def update(self, x, y):
+        """Update with new position, returns smoothed position."""
+        if not np.isfinite(x) or not np.isfinite(y):
+            return self.last_pos if self.last_pos else (np.nan, np.nan)
+        
+        new_pos = np.array([x, y])
+        
+        # First position - just accept it
+        if self.last_pos is None:
+            self.last_pos = new_pos
+            self.history.append(new_pos)
+            return (x, y)
+        
+        # Outlier rejection - if jump is too large, use median of recent history
+        distance = np.linalg.norm(new_pos - self.last_pos)
+        if distance > self.max_jump and len(self.history) >= 3:
+            # Use median of history instead of the outlier
+            hist_array = np.array(self.history)
+            median_pos = np.median(hist_array, axis=0)
+            # Blend slightly toward new position in case it's a real movement
+            new_pos = median_pos + 0.1 * (new_pos - median_pos)
+        
+        # EMA smoothing
+        smoothed = self.alpha * new_pos + (1 - self.alpha) * self.last_pos
+        
+        self.last_pos = smoothed
+        self.history.append(smoothed)
+        
+        return (float(smoothed[0]), float(smoothed[1]))
+    
+    def reset(self):
+        """Reset smoother state."""
+        self.last_pos = None
+        self.history.clear()
+
+
+class KalmanFilter2D:
+    """Simple 2D Kalman filter for position tracking."""
+    
+    def __init__(self, process_noise=0.05, measurement_noise=0.5):
+        # State: [x, y, vx, vy]
+        self.state = None
+        self.P = None  # Covariance matrix
+        self.process_noise = process_noise
+        self.measurement_noise = measurement_noise
+        self.last_time = None
+        
+    def predict(self, dt):
+        """Predict next state based on velocity."""
+        if self.state is None:
+            return
+        
+        # State transition matrix (constant velocity model)
+        F = np.array([
+            [1, 0, dt, 0],
+            [0, 1, 0, dt],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ])
+        
+        # Process noise
+        Q = self.process_noise * np.array([
+            [dt**4/4, 0, dt**3/2, 0],
+            [0, dt**4/4, 0, dt**3/2],
+            [dt**3/2, 0, dt**2, 0],
+            [0, dt**3/2, 0, dt**2]
+        ])
+        
+        self.state = F @ self.state
+        self.P = F @ self.P @ F.T + Q
+    
+    def update(self, x, y):
+        """Update state with measurement."""
+        if not np.isfinite(x) or not np.isfinite(y):
+            if self.state is not None:
+                return (float(self.state[0]), float(self.state[1]))
+            return (np.nan, np.nan)
+        
+        current_time = time.time()
+        
+        # Initialize on first measurement
+        if self.state is None:
+            self.state = np.array([x, y, 0.0, 0.0])
+            self.P = np.eye(4) * 1.0
+            self.last_time = current_time
+            return (x, y)
+        
+        # Predict step
+        dt = current_time - self.last_time
+        dt = max(0.01, min(dt, 1.0))  # Clamp dt to reasonable range
+        self.predict(dt)
+        self.last_time = current_time
+        
+        # Measurement matrix (we only measure position, not velocity)
+        H = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+        ])
+        
+        # Measurement noise
+        R = np.eye(2) * self.measurement_noise
+        
+        # Kalman gain
+        z = np.array([x, y])
+        y_residual = z - H @ self.state
+        S = H @ self.P @ H.T + R
+        K = self.P @ H.T @ np.linalg.inv(S)
+        
+        # Update state
+        self.state = self.state + K @ y_residual
+        self.P = (np.eye(4) - K @ H) @ self.P
+        
+        return (float(self.state[0]), float(self.state[1]))
+    
+    def reset(self):
+        """Reset filter state."""
+        self.state = None
+        self.P = None
+        self.last_time = None
+
+
+# Create smoothers for each method
+smoothers = {
+    "wcl": PositionSmoother(alpha=POS_ALPHA, max_jump=MAX_JUMP_DISTANCE),
+    "tri": PositionSmoother(alpha=POS_ALPHA, max_jump=MAX_JUMP_DISTANCE),
+    "bccp": PositionSmoother(alpha=POS_ALPHA, max_jump=MAX_JUMP_DISTANCE),
+}
+
+# Create Kalman filters for each method (optional)
+kalman_filters = {
+    "wcl": KalmanFilter2D(KALMAN_PROCESS_NOISE, KALMAN_MEASUREMENT_NOISE),
+    "tri": KalmanFilter2D(KALMAN_PROCESS_NOISE, KALMAN_MEASUREMENT_NOISE),
+    "bccp": KalmanFilter2D(KALMAN_PROCESS_NOISE, KALMAN_MEASUREMENT_NOISE),
+}
+
+# =========================
+# BOUNDARY FUNCTIONS
+# =========================
+def clamp_to_room(x, y):
+    """Clamp coordinates to room boundaries if enabled."""
+    if not ENABLE_BOUNDARY_CLAMP:
+        return x, y
+    
+    if not np.isfinite(x) or not np.isfinite(y):
+        return x, y
+    
+    x_clamped = np.clip(x, ROOM_BOUNDS["x_min"], ROOM_BOUNDS["x_max"])
+    y_clamped = np.clip(y, ROOM_BOUNDS["y_min"], ROOM_BOUNDS["y_max"])
+    
+    return float(x_clamped), float(y_clamped)
+
+
+def set_room_bounds(x_min, y_min, x_max, y_max):
+    """Update room boundaries."""
+    global ROOM_BOUNDS
+    ROOM_BOUNDS = {
+        "x_min": x_min,
+        "x_max": x_max,
+        "y_min": y_min,
+        "y_max": y_max,
+    }
+
+
+def toggle_boundary_clamp(enabled=None):
+    """Toggle or set boundary clamping."""
+    global ENABLE_BOUNDARY_CLAMP
+    if enabled is None:
+        ENABLE_BOUNDARY_CLAMP = not ENABLE_BOUNDARY_CLAMP
+    else:
+        ENABLE_BOUNDARY_CLAMP = enabled
+    return ENABLE_BOUNDARY_CLAMP
+
 
 # =========================
 # POSITIONING FUNCTIONS
@@ -90,31 +292,6 @@ def wcl_2d(distances: dict, p: float = 2.0):
     return num_x / den, num_y / den
 
 
-# def ls_2d_grid(distances: dict, step: float = 0.05):
-#     """Least Squares 2D via grid search."""
-#     xs_anchors = [p[0] for p in ANCHOR_POS.values()]
-#     ys_anchors = [p[1] for p in ANCHOR_POS.values()]
-    
-#     x_min, x_max = min(xs_anchors) - 0.5, max(xs_anchors) + 0.5
-#     y_min, y_max = min(ys_anchors) - 0.5, max(ys_anchors) + 0.5
-    
-#     xs = np.arange(x_min, x_max + step, step)
-#     ys = np.arange(y_min, y_max + step, step)
-#     X, Y = np.meshgrid(xs, ys)
-    
-#     error = np.zeros_like(X)
-    
-#     for anchor, dist in distances.items():
-#         if anchor not in ANCHOR_POS:
-#             continue
-#         ax, ay = ANCHOR_POS[anchor]
-#         actual_dist = np.sqrt((X - ax)**2 + (Y - ay)**2)
-#         error += (actual_dist - dist) ** 2
-    
-#     min_idx = np.unravel_index(np.argmin(error), error.shape)
-#     return float(X[min_idx]), float(Y[min_idx])
-
-
 def trilateration_2d(distances: dict):
     """Trilateration using linearized least squares."""
     anchor_list = [a for a in distances if a in ANCHOR_POS]
@@ -142,8 +319,6 @@ def trilateration_2d(distances: dict):
         return float(result[0]), float(result[1])
     except np.linalg.LinAlgError:
         return np.nan, np.nan
-
-
 
 
 # =========================
@@ -200,14 +375,12 @@ def _project_radii_to_intersect(AP, D_in, eps=1e-6, iters=15):
         for i, j in pairs:
             dij = np.linalg.norm(AP[i] - AP[j])
 
-            # ensure overlap: ri + rj >= dij - eps
             if D[i] + D[j] < dij - eps:
                 delta = (dij - eps) - (D[i] + D[j])
                 D[i] += 0.5 * delta
                 D[j] += 0.5 * delta
                 changed = True
 
-            # ensure |ri - rj| <= dij + eps
             if abs(D[i] - D[j]) > dij + eps:
                 S = D[i] + D[j]
                 if D[i] >= D[j]:
@@ -223,7 +396,7 @@ def _project_radii_to_intersect(AP, D_in, eps=1e-6, iters=15):
     return D
 
 
-def _inflate_for_overlap(AP, D0, alpha=0.20, eps=1e-6, max_iter=12):
+def _inflate_for_overlap(AP, D0, alpha=0.05, eps=1e-6, max_iter=12):
     """Inflate radii so all pairs overlap robustly."""
     AP = np.asarray(AP, float)
     D0 = np.asarray(D0, float)
@@ -234,21 +407,11 @@ def _inflate_for_overlap(AP, D0, alpha=0.20, eps=1e-6, max_iter=12):
         dij = np.linalg.norm(AP[i] - AP[j])
         den = D0[i] + D0[j]
         if den > 0:
-            s = max(s, ((1.0 + alpha) * dij) / den)
+            needed = ((1.0 + alpha) * dij) / den
+            s = max(s, min(needed, 1.5))  # Cap scaling at 1.5x
 
     D = _project_radii_to_intersect(AP, D0 * s, eps=eps, iters=20)
-    for _ in range(max_iter):
-        ok = True
-        for i, j in pairs:
-            dij = np.linalg.norm(AP[i] - AP[j])
-            if D[i] + D[j] < (1.0 + alpha) * dij - eps:
-                ok = False
-                break
-        if ok:
-            return D
-        s *= 1.03
-        D = _project_radii_to_intersect(AP, D0 * s, eps=eps, iters=20)
-    return D
+    return D  # Simplified - don't iterate further
 
 
 def _bccp_once_3anchors(anchor_names, anchor_pos, distances):
@@ -256,22 +419,21 @@ def _bccp_once_3anchors(anchor_names, anchor_pos, distances):
     AP = np.array([anchor_pos[a] for a in anchor_names], float)
     D0 = np.array([max(float(distances[a]), 1e-9) for a in anchor_names], float)
 
-    D = _project_radii_to_intersect(AP, D0)
-    D = _inflate_for_overlap(AP, D, alpha=0.20)
+    # Use smaller inflation to preserve geometry
+    D = _project_radii_to_intersect(AP, D0, eps=1e-6, iters=20)
+    D = _inflate_for_overlap(AP, D, alpha=0.05)  # Reduced from 0.20 to 0.05
 
-    # intersections
     E, F = _circ_ints(AP[0], D[0], AP[1], D[1])
     G, H = _circ_ints(AP[0], D[0], AP[2], D[2])
     I, J = _circ_ints(AP[1], D[1], AP[2], D[2])
 
-    # closed points (each picked using the 3rd circle)
     CP12 = _pick_cp(E, F, AP[2], D[2])
     CP13 = _pick_cp(G, H, AP[1], D[1])
     CP23 = _pick_cp(I, J, AP[0], D[0])
 
     CPs = np.vstack([CP12, CP13, CP23])
     CPs = CPs[np.all(np.isfinite(CPs), axis=1)]
-    if CPs.shape[0] < 3:
+    if CPs.shape[0] < 2:  # Allow 2 points minimum
         return float("nan"), float("nan")
 
     p = np.mean(CPs, axis=0)
@@ -291,39 +453,73 @@ def _residual_sum(p, anchor_list, anchor_pos, distances):
 
 
 def bccp_2d(distances: dict, clamp_bounds=None):
-    """
-    BCCP (Best Closed Point) for 3 or 4 anchors.
-    
-    - If 3 anchors: run BCCP once
-    - If 4+ anchors: try all triplets and pick estimate with lowest residual
-    
-    Returns: (x, y)
-    """
+    """BCCP (Best Closed Point) for 3 or 4 anchors with improved robustness."""
     anchors_list = [a for a in distances if a in ANCHOR_POS and np.isfinite(distances[a])]
     if len(anchors_list) < 3:
         return float("nan"), float("nan")
 
-    best = None
+    # Get anchor bounding box for sanity checking
+    ax_coords = [ANCHOR_POS[a][0] for a in anchors_list]
+    ay_coords = [ANCHOR_POS[a][1] for a in anchors_list]
+    margin = 3.0  # Allow some margin outside anchors
+    x_min, x_max = min(ax_coords) - margin, max(ax_coords) + margin
+    y_min, y_max = min(ay_coords) - margin, max(ay_coords) + margin
+
+    candidates = []
     for trip in combinations(anchors_list, 3):
         x, y = _bccp_once_3anchors(trip, ANCHOR_POS, distances)
         if not np.isfinite(x) or not np.isfinite(y):
             continue
+        
+        # Reject points far outside anchor region
+        if x < x_min or x > x_max or y < y_min or y > y_max:
+            continue
 
         score = _residual_sum((x, y), anchors_list, ANCHOR_POS, distances)
+        candidates.append((score, (x, y), trip))
 
-        if best is None or score < best[0]:
-            best = (score, (x, y), trip)
-
-    if best is None:
+    if not candidates:
         return float("nan"), float("nan")
 
+    # If we have multiple candidates, use weighted average of best ones
+    candidates.sort(key=lambda c: c[0])
+    
+    if len(candidates) == 1:
+        best = candidates[0]
+    else:
+        # Use top 2 candidates weighted by inverse score
+        top_n = min(2, len(candidates))
+        weights = [1.0 / (c[0] + 1e-6) for c in candidates[:top_n]]
+        total_w = sum(weights)
+        
+        x = sum(w * c[1][0] for w, c in zip(weights, candidates[:top_n])) / total_w
+        y = sum(w * c[1][1] for w, c in zip(weights, candidates[:top_n])) / total_w
+        best = (0, (x, y), None)
+
     x, y = best[1]
+    
+    # Apply room bounds if specified
     if clamp_bounds is not None:
         (xmin, ymin), (xmax, ymax) = clamp_bounds
         x = min(max(x, xmin), xmax)
         y = min(max(y, ymin), ymax)
 
     return float(x), float(y)
+
+
+def smooth_position(method, x, y):
+    """Apply smoothing and boundary clamping to a position estimate."""
+    # First apply EMA smoothing with outlier rejection
+    x_smooth, y_smooth = smoothers[method].update(x, y)
+    
+    # Optionally apply Kalman filter for extra smoothing
+    if USE_KALMAN:
+        x_smooth, y_smooth = kalman_filters[method].update(x_smooth, y_smooth)
+    
+    # Apply room boundary clamping
+    x_final, y_final = clamp_to_room(x_smooth, y_smooth)
+    
+    return x_final, y_final
 
 
 # =========================
@@ -378,25 +574,30 @@ def on_message(client, userdata, msg):
     last_plot_time = ts
     frame_count += 1
     
-    # Calculate positions using all methods (including BCCP)
-    x_wcl, y_wcl = wcl_2d(valid_anchors, p=2.0)
-    # x_ls, y_ls = ls_2d_grid(valid_anchors, step=0.05)
-    x_tri, y_tri = trilateration_2d(valid_anchors)
-
-    x_bccp, y_bccp = bccp_2d(valid_anchors)
+    # Calculate raw positions
+    x_wcl_raw, y_wcl_raw = wcl_2d(valid_anchors, p=2.0)
+    x_tri_raw, y_tri_raw = trilateration_2d(valid_anchors)
+    x_bccp_raw, y_bccp_raw = bccp_2d(valid_anchors)
+    
+    # Apply smoothing and boundary clamping
+    x_wcl, y_wcl = smooth_position("wcl", x_wcl_raw, y_wcl_raw)
+    x_tri, y_tri = smooth_position("tri", x_tri_raw, y_tri_raw)
+    x_bccp, y_bccp = smooth_position("bccp", x_bccp_raw, y_bccp_raw)
     
     print(f"[{frame_count:04d}] Anchors: {len(valid_anchors)} | "
           f"WCL=({x_wcl:.2f},{y_wcl:.2f}) "
-        #   f"LS=({x_ls:.2f},{y_ls:.2f}) "
           f"TRI=({x_tri:.2f},{y_tri:.2f}) "
-          f"BCCP=({x_bccp:.2f},{y_bccp:.2f})")
+          f"BCCP=({x_bccp:.2f},{y_bccp:.2f}) "
+          f"[Bounds: {'ON' if ENABLE_BOUNDARY_CLAMP else 'OFF'}]")
     
     position_queue.put({
         "distances": valid_anchors,
         "wcl": (x_wcl, y_wcl),
-        # "ls": (x_ls, y_ls),
         "tri": (x_tri, y_tri),
         "bccp": (x_bccp, y_bccp),
+        "wcl_raw": (x_wcl_raw, y_wcl_raw),
+        "tri_raw": (x_tri_raw, y_tri_raw),
+        "bccp_raw": (x_bccp_raw, y_bccp_raw),
     })
 
 
@@ -421,8 +622,18 @@ def main():
     ax.set_aspect('equal')
     ax.set_xlabel("X (meters)")
     ax.set_ylabel("Y (meters)")
-    ax.set_title("2D Indoor Positioning (with BCCP)")
+    ax.set_title("2D Indoor Positioning (Stabilized with BCCP)")
     ax.grid(True, alpha=0.3)
+    
+    # Draw room boundary if enabled
+    if ENABLE_BOUNDARY_CLAMP:
+        boundary_rect = plt.Rectangle(
+            (ROOM_BOUNDS["x_min"], ROOM_BOUNDS["y_min"]),
+            ROOM_BOUNDS["x_max"] - ROOM_BOUNDS["x_min"],
+            ROOM_BOUNDS["y_max"] - ROOM_BOUNDS["y_min"],
+            fill=False, edgecolor='red', linestyle='-', linewidth=2, alpha=0.7
+        )
+        ax.add_patch(boundary_rect)
     
     for name, (x, y) in ANCHOR_POS.items():
         ax.plot(x, y, 's', color='black', markersize=15, zorder=10)
@@ -435,11 +646,9 @@ def main():
         ax.add_patch(circle)
         circles[name] = circle
     
-    # Position markers for each method (added BCCP)
+    # Position markers for each method
     dot_wcl, = ax.plot([np.nan], [np.nan], 'o', color='blue', 
                        markersize=14, label='WCL (p=2)', alpha=0.8)
-    # dot_ls, = ax.plot([np.nan], [np.nan], 's', color='green', 
-    #                   markersize=12, label='Least Squares (Grid)', alpha=0.8)
     dot_tri, = ax.plot([np.nan], [np.nan], '^', color='orange', 
                        markersize=12, label='Trilateration', alpha=0.8)
     dot_bccp, = ax.plot([np.nan], [np.nan], 'p', color='purple', 
@@ -456,6 +665,9 @@ def main():
     
     print("[MAIN] Running... Close window to stop")
     print(f"[MAIN] Using {len(ANCHOR_POS)} anchors: {list(ANCHOR_POS.keys())}")
+    print(f"[MAIN] Boundary clamping: {'ENABLED' if ENABLE_BOUNDARY_CLAMP else 'DISABLED'}")
+    print(f"[MAIN] Kalman filter: {'ENABLED' if USE_KALMAN else 'DISABLED'}")
+    print("[MAIN] Press 'b' to toggle boundary clamping")
     
     running = True
     
@@ -463,7 +675,13 @@ def main():
         nonlocal running
         running = False
     
+    def on_key(event):
+        if event.key == 'b':
+            state = toggle_boundary_clamp()
+            print(f"[MAIN] Boundary clamping: {'ENABLED' if state else 'DISABLED'}")
+    
     fig.canvas.mpl_connect('close_event', on_close)
+    fig.canvas.mpl_connect('key_press_event', on_key)
     
     try:
         while running and plt.fignum_exists(fig.number):
@@ -479,12 +697,8 @@ def main():
                     dot_wcl.set_xdata([result["wcl"][0]])
                     dot_wcl.set_ydata([result["wcl"][1]])
                     
-                    # dot_ls.set_xdata([result["ls"][0]])
-                    # dot_ls.set_ydata([result["ls"][1]])
-                    
                     dot_tri.set_xdata([result["tri"][0]])
                     dot_tri.set_ydata([result["tri"][1]])
-
 
                     dot_bccp.set_xdata([result["bccp"][0]])
                     dot_bccp.set_ydata([result["bccp"][1]])
@@ -496,12 +710,14 @@ def main():
                     lines = ["Distances:"]
                     for name, dist in sorted(result["distances"].items()):
                         lines.append(f"  {name}: {dist:.2f}m")
-                    lines.append("─" * 18)
-                    lines.append("Positions:")
+                    lines.append("─" * 20)
+                    lines.append("Smoothed Positions:")
                     lines.append(f"  WCL:  ({result['wcl'][0]:.2f}, {result['wcl'][1]:.2f})")
-                    # lines.append(f"  LS:   ({result['ls'][0]:.2f}, {result['ls'][1]:.2f})")
                     lines.append(f"  TRI:  ({result['tri'][0]:.2f}, {result['tri'][1]:.2f})")
                     lines.append(f"  BCCP: ({result['bccp'][0]:.2f}, {result['bccp'][1]:.2f})")
+                    lines.append("─" * 20)
+                    lines.append(f"Bounds: {'ON' if ENABLE_BOUNDARY_CLAMP else 'OFF'}")
+                    lines.append(f"Kalman: {'ON' if USE_KALMAN else 'OFF'}")
                     
                     info.set_text('\n'.join(lines))
                     

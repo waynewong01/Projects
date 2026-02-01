@@ -8,9 +8,9 @@ BROKER_HOST = "127.0.0.1"
 BROKER_PORT = 1883
 TOPIC = "ips/rssi"
 
-ANCHOR_FILTER = "A3"
+ANCHOR_FILTER = "A4"
 TAG_MAC_FILTER = None
-DISTANCE_M = 3       # Change this for each distance
+DISTANCE_M = 4       # Change this for each distance
 MAX_READINGS = 20        # Readings per distance
 
 # Single file for all distances

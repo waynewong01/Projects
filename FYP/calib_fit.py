@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-CSV_FILE = "calibration_A3.csv"
+CSV_FILE = "calibration_A4.csv"
 
 def fit_anchor(df_anchor):
     # Use median RSSI at each distance to reduce outliers
