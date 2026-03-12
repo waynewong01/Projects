@@ -13,10 +13,8 @@ Project: EE4002D Indoor Tracking
 import asyncio
 import json
 import math
-import random
 import time
 from collections import deque
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -44,15 +42,15 @@ class Config:
     """System configuration - modify these values as needed"""
     
     # Room dimensions (meters)
-    room_width: float = 6
-    room_height: float = 6
+    room_width: float = 8.2
+    room_height: float = 8.0
     
     # Anchor positions (x, y) in meters
     anchor_positions: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
         "A1": (0.0, 0.0),
-        "A2": (6.0, 0),
-        "A3": (0.0, 6.0),
-        "A4": (6.0, 6.0),
+        "A2": (8.2, 8.0),
+        "A3": (0.0, 8.0),
+        "A4": (8.2, 0.0),
     })
     
     # Calibration values per anchor
@@ -66,7 +64,7 @@ class Config:
     # Smoothing factors per algorithm (EMA alpha values)
     smoothing_factors: Dict[str, float] = field(default_factory=lambda: {
         "WCL": 0.35,
-        "TRI": 0.55,
+        "TRI": 0.20,
         "BCCP": 0.20,
         "FUSED": 0.25,
     })
@@ -90,10 +88,6 @@ class Config:
     # Distance constraints
     min_distance: float = 0.3
     max_distance: float = 15.0
-
-    # Distance consistency (helps reduce contradictory non-intersecting circles)
-    enforce_distance_consistency: bool = False
-    distance_consistency_iterations: int = 2
 
 
 # Global configuration instance
@@ -447,8 +441,8 @@ class PositioningEngine:
         if not history:
             return None
         
-        # Use last 3 measurements for faster response
-        recent = list(history)[-3:]
+        # Use last 5 measurements for smoothing
+        recent = list(history)[-5:]
         return sum(r.rssi for r in recent) / len(recent)
     
     def compute_distances(self) -> Dict[str, float]:
@@ -463,57 +457,9 @@ class PositioningEngine:
                     rssi, calib["rssi1m"], calib["n"]
                 )
                 distances[anchor_id] = distance
-
-        if config.enforce_distance_consistency and len(distances) >= 3:
-            distances = self._enforce_distance_consistency(distances)
         
         self.current_distances = distances
         return distances
-
-    def _enforce_distance_consistency(self, distances: Dict[str, float]) -> Dict[str, float]:
-        """Project distances toward pairwise-feasible ranges under circle geometry constraints."""
-        adjusted = distances.copy()
-        anchor_ids = [aid for aid in adjusted.keys() if aid in config.anchor_positions]
-
-        for _ in range(max(1, int(config.distance_consistency_iterations))):
-            for i in range(len(anchor_ids)):
-                for j in range(i + 1, len(anchor_ids)):
-                    aid_i = anchor_ids[i]
-                    aid_j = anchor_ids[j]
-
-                    xi, yi = config.anchor_positions[aid_i]
-                    xj, yj = config.anchor_positions[aid_j]
-                    anchor_sep = math.sqrt((xi - xj) ** 2 + (yi - yj) ** 2)
-
-                    di = adjusted[aid_i]
-                    dj = adjusted[aid_j]
-
-                    # Keep values within global limits first
-                    di = min(max(di, config.min_distance), config.max_distance)
-                    dj = min(max(dj, config.min_distance), config.max_distance)
-
-                    # If one distance is unrealistically larger than the other for this anchor separation,
-                    # shrink the larger one instead of inflating the smaller one.
-                    if abs(di - dj) > anchor_sep:
-                        if di > dj:
-                            di = dj + anchor_sep
-                        else:
-                            dj = di + anchor_sep
-
-                    # If circles are too small to meet, minimally increase the smaller distance.
-                    if di + dj < anchor_sep:
-                        if di < dj:
-                            di = anchor_sep - dj
-                        else:
-                            dj = anchor_sep - di
-
-                    di = min(max(di, config.min_distance), config.max_distance)
-                    dj = min(max(dj, config.min_distance), config.max_distance)
-
-                    adjusted[aid_i] = di
-                    adjusted[aid_j] = dj
-
-        return adjusted
     
     def smooth_position(self, algo_name: str, new_pos: Optional[Position]) -> Optional[Position]:
         """Apply exponential moving average smoothing"""
@@ -647,10 +593,6 @@ class PositioningEngine:
                 config.calibration[aid].update(calib)
         if "smoothing_factors" in new_config:
             config.smoothing_factors.update(new_config["smoothing_factors"])
-        if "enforce_distance_consistency" in new_config:
-            config.enforce_distance_consistency = bool(new_config["enforce_distance_consistency"])
-        if "distance_consistency_iterations" in new_config:
-            config.distance_consistency_iterations = max(1, int(new_config["distance_consistency_iterations"]))
 
 
 # =============================================================================
@@ -717,63 +659,7 @@ class MQTTHandler:
 # FASTAPI APPLICATION
 # =============================================================================
 
-# Global instances (created before lifespan)
-engine = PositioningEngine()
-mqtt_handler = MQTTHandler(engine)
-
-# Background task reference
-_demo_task = None
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup and shutdown logic using modern lifespan context manager"""
-    global _demo_task
-    
-    logger.info("Starting IPS Dashboard Server...")
-    
-    # Connect to MQTT broker
-    mqtt_handler.connect()
-    
-    # Demo data generator for testing (remove in production)
-    async def demo_data():
-        """Generate demo RSSI data for testing"""
-        while True:
-            # Simulate device at position (4, 4)
-            target_x, target_y = 4.0, 4.0
-            
-            for anchor_id, pos in config.anchor_positions.items():
-                # Calculate true distance
-                true_dist = math.sqrt((target_x - pos[0])**2 + (target_y - pos[1])**2)
-                
-                # Convert to RSSI with noise
-                calib = config.calibration[anchor_id]
-                rssi = calib["rssi1m"] - 10 * calib["n"] * math.log10(max(0.1, true_dist))
-                rssi += random.gauss(0, 2)  # Add noise
-                
-                engine.add_rssi(anchor_id, rssi)
-            
-            await asyncio.sleep(0.1)
-    
-    # Start demo data generation (comment out when using real MQTT)
-    # _demo_task = asyncio.create_task(demo_data())
-    
-    logger.info(f"Server running at http://{config.server_host}:{config.server_port}")
-    
-    yield  # Server runs here
-    
-    # Shutdown
-    logger.info("Shutting down IPS Dashboard Server...")
-    if _demo_task:
-        _demo_task.cancel()
-    mqtt_handler.disconnect()
-
-
-app = FastAPI(
-    title="IPS Dashboard",
-    description="Indoor Positioning System Dashboard",
-    lifespan=lifespan
-)
+app = FastAPI(title="IPS Dashboard", description="Indoor Positioning System Dashboard")
 
 # Enable CORS
 app.add_middleware(
@@ -783,6 +669,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global instances
+engine = PositioningEngine()
+mqtt_handler = MQTTHandler(engine)
 
 
 # =============================================================================
@@ -1545,7 +1435,7 @@ DASHBOARD_HTML = """
                             </div>
                             <div class="config-row">
                                 <label>Trilateration</label>
-                                <input type="number" id="smoothTri" step="0.05" min="0" max="1" value="0.55">
+                                <input type="number" id="smoothTri" step="0.05" min="0" max="1" value="0.20">
                             </div>
                             <div class="config-row">
                                 <label>BCCP</label>
@@ -2186,7 +2076,7 @@ DASHBOARD_HTML = """
                 
                 if (config.smoothing_factors) {
                     document.getElementById('smoothWcl').value = config.smoothing_factors.WCL || 0.35;
-                    document.getElementById('smoothTri').value = config.smoothing_factors.TRI || 0.55;
+                    document.getElementById('smoothTri').value = config.smoothing_factors.TRI || 0.20;
                     document.getElementById('smoothBccp').value = config.smoothing_factors.BCCP || 0.20;
                     document.getElementById('smoothFused').value = config.smoothing_factors.FUSED || 0.25;
                 }
@@ -2296,8 +2186,6 @@ async def get_config():
         "anchor_positions": config.anchor_positions,
         "calibration": config.calibration,
         "smoothing_factors": config.smoothing_factors,
-        "enforce_distance_consistency": config.enforce_distance_consistency,
-        "distance_consistency_iterations": config.distance_consistency_iterations,
         "ground_truth": {
             "x": engine.ground_truth.x,
             "y": engine.ground_truth.y
@@ -2389,6 +2277,54 @@ async def add_rssi_bulk(request: Request):
             engine.add_rssi(anchor_id, float(rssi))
     
     return {"status": "ok", "count": len(data)}
+
+
+# =============================================================================
+# STARTUP AND SHUTDOWN
+# =============================================================================
+
+@app.on_event("startup")
+async def startup():
+    """Initialize on startup"""
+    logger.info("Starting IPS Dashboard Server...")
+    
+    # Connect to MQTT broker
+    mqtt_handler.connect()
+    
+    # Add some demo data for testing (remove in production)
+    # This simulates RSSI values for a device at approximately (4, 4)
+    import random
+    
+    async def demo_data():
+        """Generate demo RSSI data for testing"""
+        while True:
+            # Simulate device at position (4, 4)
+            target_x, target_y = 4.0, 4.0
+            
+            for anchor_id, pos in config.anchor_positions.items():
+                # Calculate true distance
+                true_dist = math.sqrt((target_x - pos[0])**2 + (target_y - pos[1])**2)
+                
+                # Convert to RSSI with noise
+                calib = config.calibration[anchor_id]
+                rssi = calib["rssi1m"] - 10 * calib["n"] * math.log10(max(0.1, true_dist))
+                rssi += random.gauss(0, 2)  # Add noise
+                
+                engine.add_rssi(anchor_id, rssi)
+            
+            await asyncio.sleep(0.1)
+    
+    # Start demo data generation (comment out when using real MQTT)
+    # asyncio.create_task(demo_data())
+    
+    logger.info(f"Server running at http://{config.server_host}:{config.server_port}")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Cleanup on shutdown"""
+    logger.info("Shutting down IPS Dashboard Server...")
+    mqtt_handler.disconnect()
 
 
 # =============================================================================
