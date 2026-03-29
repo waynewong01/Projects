@@ -1,7 +1,9 @@
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 
-CSV_FILE = "calibration_A8.csv"
+CSV_FILE = Path(__file__).resolve().parents[1] / "data" / "calibration" / "calibration_A8.csv"
 
 def fit_anchor(df_anchor):
     # Use median RSSI at each distance to reduce outliers

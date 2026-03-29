@@ -2333,7 +2333,7 @@ async def shutdown():
 
 if __name__ == "__main__":
     uvicorn.run(
-        "ips_dashboard_server:app",
+        "legacy.ips_dashboard_server:app",
         host=config.server_host,
         port=config.server_port,
         reload=True,

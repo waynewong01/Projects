@@ -14,7 +14,8 @@ DISTANCE_M = 6   # Change this for each distance
 MAX_READINGS = 20        # Readings per distance
 
 # Single file for all distances
-OUT_CSV = Path(f"calibration_{ANCHOR_FILTER}.csv")
+DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "calibration"
+OUT_CSV = DATA_DIR / f"calibration_{ANCHOR_FILTER}.csv"
 
 # Counter for readings
 reading_count = 0
@@ -34,6 +35,7 @@ def count_existing_for_distance():
 
 def ensure_header():
     """Create file with header if it doesn't exist."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not OUT_CSV.exists():
         try:
             with OUT_CSV.open("w", newline="") as f:

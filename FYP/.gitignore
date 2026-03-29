@@ -1,0 +1,13 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Generated plots and experiment exports
+outputs/
+experiment_results_*.csv
+
+# Notebook checkpoints
+.ipynb_checkpoints/

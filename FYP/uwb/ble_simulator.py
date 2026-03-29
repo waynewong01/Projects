@@ -3,8 +3,8 @@
 Synthetic BLE ranging simulator for generating error results.
 
 Examples:
-  python -m files.ble_simulator --point-x 3.25 --point-y 3.65 --samples 300 --rssi-sigma-db 6
-  python -m files.ble_simulator --point-x 3.25 --point-y 3.65 --samples 300 --rssi-sigma-db 12
+  python -m uwb.ble_simulator --point-x 3.25 --point-y 3.65 --samples 300 --rssi-sigma-db 6
+  python -m uwb.ble_simulator --point-x 3.25 --point-y 3.65 --samples 300 --rssi-sigma-db 12
 
 Rule of thumb:
   - 4 to 6 dB RSSI noise often produces roughly 1 to 2 m distance error indoors

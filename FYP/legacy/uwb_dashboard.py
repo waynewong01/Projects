@@ -1165,5 +1165,5 @@ async def shutdown():
 
 
 if __name__ == "__main__":
-    uvicorn.run("uwb_dashboard:app", host=config.server_host,
+    uvicorn.run("legacy.uwb_dashboard:app", host=config.server_host,
                 port=config.server_port, reload=True, log_level="info")
