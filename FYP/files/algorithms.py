@@ -21,8 +21,6 @@ class PositioningAlgorithms:
             return None
         x = sum(p.x * w for p, w in entries) / tw
         y = sum(p.y * w for p, w in entries) / tw
-        x = max(0.0, min(config.room_width, x))
-        y = max(0.0, min(config.room_height, y))
         return Position(x=x, y=y)
 
     # -----------------------------------------------------------------
@@ -210,11 +208,11 @@ class PositioningAlgorithms:
         """Fixed weighted fusion of available algorithm outputs."""
         entries = []
         if wcl:
-            entries.append((wcl, 0.205))
+            entries.append((wcl, 0.1467))
         if tri:
-            entries.append((tri, 0.463))
+            entries.append((tri, 0.5561))
         if bccp:
-            entries.append((bccp, 0.332))
+            entries.append((bccp, 0.2972))
         return PositioningAlgorithms._weighted_average(entries)
 
     @staticmethod
@@ -237,7 +235,7 @@ class PositioningAlgorithms:
         if len(candidates) == 1:
             return next(iter(candidates.values()))
 
-        base_weights = {"WCL": 0.205, "TRI": 0.463, "BCCP": 0.332}
+        base_weights = {"WCL": 0.2, "TRI": 0.6, "BCCP": 0.2}
         eps = 1e-6
         outlier_floor = 0.15
 

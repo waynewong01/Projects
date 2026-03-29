@@ -297,12 +297,12 @@ class PositioningEngine:
 
         fusion_mode = str(getattr(config, "fusion_mode", "fixed")).lower()
         selected = "FUSED_ADAPTIVE" if fusion_mode == "adaptive" else "FUSED_FIXED"
-        fused_position = fused_adaptive_smoothed if selected == "FUSED_ADAPTIVE" else fused_fixed_smoothed
-        self.smoothed_positions["FUSED"] = fused_position
-        fused_err = self.calc_error(fused_position)
+        selected_raw = fused_adaptive_smoothed if selected == "FUSED_ADAPTIVE" else fused_fixed_smoothed
+        fused_smoothed = self.smooth_position("FUSED", selected_raw)
+        fused_err = self.calc_error(fused_smoothed)
         if fused_err is not None:
             self.error_history["FUSED"].append(fused_err)
-        results["FUSED"] = AlgorithmResult("FUSED", fused_position, distances.copy(), fused_err)
+        results["FUSED"] = AlgorithmResult("FUSED", fused_smoothed, distances.copy(), fused_err)
 
         return results
 

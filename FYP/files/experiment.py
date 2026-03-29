@@ -1,5 +1,5 @@
-"""
-Experiment Manager — structured data collection for Chapter 7 evaluation.
+﻿"""
+Experiment Manager â€” structured data collection for Chapter 7 evaluation.
 
 Workflow:
   1. Define test points with spatial zones (Centre, Boundary, Corner)
@@ -88,25 +88,36 @@ class PointResult:
 
 
 # -------------------------------------------------------------------------
-# Default test points for 8×8 room with anchors at corners
+# Default test points for a 6.5 x 7.3 room with anchors at corners
 # -------------------------------------------------------------------------
 
 DEFAULT_TEST_POINTS = [
-    # Centre zone — well inside the convex hull
-    TestPoint("C1", Zone.CENTRE, 4.0, 4.0),
-    TestPoint("C2", Zone.CENTRE, 3.0, 4.0),
-    TestPoint("C3", Zone.CENTRE, 5.0, 5.0),
-    # Boundary zone — near edges
-    TestPoint("B1", Zone.BOUNDARY, 4.0, 0.5),
-    TestPoint("B2", Zone.BOUNDARY, 0.5, 4.0),
-    TestPoint("B3", Zone.BOUNDARY, 7.5, 4.0),
-    # Corner zone — near anchor positions
-    TestPoint("K1", Zone.CORNER, 1.0, 1.0),
-    TestPoint("K2", Zone.CORNER, 7.0, 7.0),
+    # Centre zone (7 points)
+    TestPoint("C1", Zone.CENTRE, 3.25, 3.65),
+    TestPoint("C2", Zone.CENTRE, 2.15, 2.43),
+    TestPoint("C3", Zone.CENTRE, 4.35, 2.43),
+    TestPoint("C4", Zone.CENTRE, 2.15, 4.87),
+    TestPoint("C5", Zone.CENTRE, 4.35, 4.87),
+    TestPoint("C6", Zone.CENTRE, 2.15, 3.65),
+    TestPoint("C7", Zone.CENTRE, 4.35, 3.65),
+
+    # Boundary zone (8 points)
+    TestPoint("B1", Zone.BOUNDARY, 0.00, 2.43),
+    TestPoint("B2", Zone.BOUNDARY, 0.00, 4.87),
+    TestPoint("B3", Zone.BOUNDARY, 6.50, 2.43),
+    TestPoint("B4", Zone.BOUNDARY, 6.50, 4.87),
+    TestPoint("B5", Zone.BOUNDARY, 3.25, 0.00),
+    TestPoint("B6", Zone.BOUNDARY, 3.25, 7.30),
+    TestPoint("B7", Zone.BOUNDARY, 0.00, 3.65),
+    TestPoint("B8", Zone.BOUNDARY, 6.50, 3.65),
+
+    # Corner zone (4 points)
+    TestPoint("K1", Zone.CORNER, 1.08, 1.22),
+    TestPoint("K2", Zone.CORNER, 5.42, 1.22),
+    TestPoint("K3", Zone.CORNER, 1.08, 6.08),
+    TestPoint("K4", Zone.CORNER, 5.42, 6.08),
 ]
 
-
-# -------------------------------------------------------------------------
 # Experiment Manager
 # -------------------------------------------------------------------------
 
@@ -309,7 +320,7 @@ class ExperimentManager:
         }
 
     # -----------------------------------------------------------------
-    # Export — CSV (Chapter 7 tables)
+    # Export â€” CSV (Chapter 7 tables)
     # -----------------------------------------------------------------
 
     def export_csv(self) -> str:
@@ -392,7 +403,7 @@ class ExperimentManager:
         return output.getvalue()
 
     # -----------------------------------------------------------------
-    # Export — JSON (full raw data)
+    # Export â€” JSON (full raw data)
     # -----------------------------------------------------------------
 
     def export_json(self) -> dict:

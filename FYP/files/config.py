@@ -13,11 +13,11 @@ class Config:
     mode: str = "2D"
 
     # For 1D: distance between A1 and A2 (meters)
-    line_length: float = 6.0
+    line_length: float = 6.5
 
     # For 2D: room dimensions (meters)
-    room_width: float = 8.0
-    room_height: float = 8.0
+    room_width: float = 6.5
+    room_height: float = 7.3
 
     # Anchor positions (x, y) in meters
     anchor_positions: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
